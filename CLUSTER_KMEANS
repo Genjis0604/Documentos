@@ -1,0 +1,47 @@
+var geometry = ee.Geometry.Polygon([
+  [
+    [-73.64, 8.33],
+    [-73.64, 8.28],
+    [-73.58, 8.28],
+    [-73.58, 8.33],
+    [-73.64, 8.33]
+  ]
+]);
+Map.centerObject(geometry, 13);
+Map.addLayer(geometry, {color: 'red'}, 'Polígono reducido');
+var coleccion = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate('2020-01-01', '2020-12-31')
+  .filterBounds(geometry)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40));
+print('Número de imágenes:', coleccion.size());
+var mp = coleccion.median().clip(geometry);
+Map.addLayer(mp, {
+  min: 0,
+  max: 3000,
+  bands: ['B4', 'B3', 'B2']
+}, 'Sentinel 2 RGB');
+var bandas = mp.select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']);
+print('Bandas:', bandas.bandNames());
+var training = bandas.sample({
+  region: geometry,
+  scale: 20,
+  numPixels: 3000,
+  geometries: true
+});
+print('Training:', training.limit(10));
+print('Número de muestras:', training.size());
+var kmeans = ee.Clusterer.wekaKMeans(6).train(training);
+var resultado = bandas.cluster(kmeans);
+Map.addLayer(resultado.randomVisualizer(), {}, 'Clasificación K-means');
+
+//Exportar
+Export.image.toDrive({
+  image: resultado,
+  description: 'KMeans_Aguachica_TIFF',
+  folder: 'GEE',
+  fileNamePrefix: 'aguachica_kmeans',
+  region: geometry,
+  scale: 20,
+  fileFormat: 'GeoTIFF',
+  maxPixels: 1e13
+});
