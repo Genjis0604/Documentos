@@ -1,0 +1,225 @@
+verificar_e_instalar = function(paquete) {
+  if (!require(paquete, character.only = TRUE)) {
+    install.packages(paquete, dependencies = TRUE)
+    library(paquete, character.only = TRUE)
+  }
+}
+
+paquetes_necesarios = c(
+  "tidyverse",
+  "quantmod",
+  "DataExplorer",
+  "corrplot",
+  "ggplot2",
+  "scales",
+  "quadprog"
+)
+
+lapply(paquetes_necesarios, verificar_e_instalar)
+
+library(tidyverse)
+library(quantmod)
+library(DataExplorer)
+library(corrplot)
+library(scales)
+library(ggplot2)
+library(quadprog)
+
+activos = c("VTI", "VEA", "VWO", "BND", "GLD")
+
+fecha_inicio = "2021-01-01"
+fecha_final  = "2023-08-31"
+
+getSymbols(
+  activos,
+  from = fecha_inicio,
+  to = fecha_final,
+  auto.assign = TRUE
+)
+
+precios_mensuales = lapply(activos, function(activo) {
+  to.monthly(
+    Ad(get(activo)),
+    indexAt = "lastof",
+    OHLC = FALSE
+  )
+})
+
+precios_activos = do.call(cbind, precios_mensuales)
+
+colnames(precios_activos) = activos
+
+precios_activos = na.omit(precios_activos)
+
+rendimientos_aritmeticos = diff(precios_activos) / lag(precios_activos)
+
+rendimientos_aritmeticos = na.omit(rendimientos_aritmeticos)
+
+head(rendimientos_aritmeticos, n = 3)
+
+plot_intro(as.data.frame(rendimientos_aritmeticos))
+
+rendimientos_acumulados = cumprod(1 + rendimientos_aritmeticos)
+
+autoplot(rendimientos_acumulados, facets = NULL) +
+  ggtitle("Rendimiento acumulado del universo de inversión") +
+  ylab("Rendimiento acumulado") +
+  xlab("Año")
+
+summary(rendimientos_aritmeticos)
+
+corrplot(
+  cor(rendimientos_aritmeticos),
+  type = "lower",
+  method = "shade",
+  tl.col = "black",
+  cl.pos = "r",
+  tl.cex = 1
+)
+
+numero_activos = ncol(rendimientos_aritmeticos)
+numero_observaciones = nrow(rendimientos_aritmeticos)
+
+vector_unos = rep(1, numero_activos)
+
+periodicidad = 12
+
+tasa_libre_riesgo = 0.04
+
+matriz_covarianzas = cov(rendimientos_aritmeticos) *
+  (numero_observaciones - 1) /
+  (numero_observaciones - numero_activos - 2) *
+  periodicidad
+
+parametro_regularizacion = 1e-4
+
+matriz_covarianzas = matriz_covarianzas +
+  diag(parametro_regularizacion, ncol(matriz_covarianzas))
+
+retornos_esperados = colMeans(rendimientos_aritmeticos) *
+  periodicidad -
+  tasa_libre_riesgo
+
+retornos_esperados = as.matrix(retornos_esperados)
+
+constante_historica = t(vector_unos) %*%
+  solve(matriz_covarianzas) %*%
+  retornos_esperados
+
+pesos_historicos = as.numeric(1 / constante_historica) *
+  solve(matriz_covarianzas) %*%
+  retornos_esperados
+
+retorno_portafolio_historico = t(retornos_esperados) %*%
+  pesos_historicos
+
+print("Pesos del portafolio histórico:")
+print(pesos_historicos)
+
+print("Retorno esperado del portafolio histórico:")
+print(retorno_portafolio_historico)
+
+opiniones_inversionista = numeric(numero_activos)
+
+opiniones_inversionista[1] =  0.06
+opiniones_inversionista[2] =  0.04
+opiniones_inversionista[3] =  0.03
+opiniones_inversionista[4] =  0.02
+opiniones_inversionista[5] =  0.05
+
+opiniones_inversionista = as.matrix(opiniones_inversionista)
+
+tau = 0.95
+
+matriz_incertidumbre_opiniones = diag(
+  diag(matriz_covarianzas),
+  numero_activos,
+  numero_activos
+)
+
+retornos_ajustados_BL = solve(
+  solve(tau * matriz_covarianzas) +
+    solve(matriz_incertidumbre_opiniones)
+) %*% (
+  solve(tau * matriz_covarianzas) %*% retornos_esperados +
+    solve(matriz_incertidumbre_opiniones) %*% opiniones_inversionista
+)
+
+print("Retornos esperados ajustados por Black-Litterman:")
+print(retornos_ajustados_BL)
+
+constante_opiniones = t(vector_unos) %*%
+  solve(matriz_covarianzas) %*%
+  opiniones_inversionista
+
+pesos_opiniones = as.numeric(1 / constante_opiniones) *
+  solve(matriz_covarianzas) %*%
+  opiniones_inversionista
+
+print("Pesos del portafolio usando solo opiniones:")
+print(pesos_opiniones)
+
+constante_BL = t(vector_unos) %*%
+  solve(matriz_covarianzas) %*%
+  retornos_ajustados_BL
+
+pesos_BL_sin_restriccion = as.numeric(1 / constante_BL) *
+  solve(matriz_covarianzas) %*%
+  retornos_ajustados_BL
+
+print("Pesos del portafolio Black-Litterman sin restricción:")
+print(pesos_BL_sin_restriccion)
+
+matriz_D = 2 * matriz_covarianzas
+
+vector_d = as.vector(retornos_ajustados_BL)
+
+matriz_restricciones = cbind(
+  rep(1, numero_activos),
+  diag(numero_activos)
+)
+
+vector_restricciones = c(
+  1,
+  rep(0, numero_activos)
+)
+
+resultado_optimizacion = solve.QP(
+  Dmat = matriz_D,
+  dvec = vector_d,
+  Amat = matriz_restricciones,
+  bvec = vector_restricciones,
+  meq = 1
+)
+
+pesos_finales_BL = resultado_optimizacion$solution
+
+names(pesos_finales_BL) = activos
+
+print("Pesos finales del portafolio Black-Litterman:")
+print(pesos_finales_BL)
+
+barplot(
+  pesos_finales_BL,
+  col = "steelblue",
+  names.arg = activos,
+  ylim = c(0, max(pesos_finales_BL) + 0.05),
+  main = "Pesos del portafolio Black-Litterman",
+  ylab = "Peso",
+  xlab = "Activos"
+)
+
+retorno_portafolio_BL = t(pesos_finales_BL) %*%
+  retornos_ajustados_BL
+
+riesgo_portafolio_BL = sqrt(
+  t(pesos_finales_BL) %*%
+    matriz_covarianzas %*%
+    pesos_finales_BL
+)
+
+print("Retorno esperado del portafolio Black-Litterman:")
+print(retorno_portafolio_BL)
+
+print("Riesgo esperado del portafolio Black-Litterman:")
+print(riesgo_portafolio_BL)
