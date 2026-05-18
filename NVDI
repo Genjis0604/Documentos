@@ -1,0 +1,214 @@
+//////////////////////////////////////////////////////////////////////////
+// REGRESIÓN LINEAL DEL NDVI EN EL DEPARTAMENTO DEL CESAR
+// Periodo: 2010 - 2019
+// Producto: MODIS/061/MOD13A1
+//////////////////////////////////////////////////////////////////////////
+
+
+//////////////////////////////////////////////////////////////////////////
+// 1. CARGAR SHAPEFILE DEL CESAR
+//////////////////////////////////////////////////////////////////////////
+
+var Cesar = ee.FeatureCollection(
+  'projects/vocal-entity-454103-n9/assets/SHAPELIFECESAR'
+);
+
+// Visualizar área de estudio
+Map.centerObject(Cesar, 8);
+Map.addLayer(Cesar, {color: 'blue'}, 'Departamento del Cesar');
+
+print('Shapefile Cesar', Cesar);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 2. FECHA BASE PARA CALCULAR EL TIEMPO EN AÑOS
+//////////////////////////////////////////////////////////////////////////
+
+var fechaInicio = ee.Date('2010-01-01');
+
+
+//////////////////////////////////////////////////////////////////////////
+// 3. FUNCIÓN PARA AÑADIR BANDA DE TIEMPO
+//////////////////////////////////////////////////////////////////////////
+
+var addTime = function(image) {
+  var tiempo = image.date().difference(fechaInicio, 'year');
+
+  return image.addBands(
+    ee.Image.constant(tiempo)
+      .rename('time')
+      .toFloat()
+  );
+};
+
+
+//////////////////////////////////////////////////////////////////////////
+// 4. CARGAR COLECCIÓN MODIS NDVI Y APLICAR MÁSCARAS
+//////////////////////////////////////////////////////////////////////////
+
+var dataset = ee.ImageCollection("MODIS/061/MOD13A1")
+  .filterDate('2010-01-01', '2019-12-31')
+  .filterBounds(Cesar)
+  .map(function(image) {
+
+    // NDVI escalado
+    var ndvi = image.select('NDVI')
+      .multiply(0.0001)
+      .rename('NDVI');
+
+    // Banda de calidad SummaryQA
+    // 0 = buena calidad
+    var qa = image.select('SummaryQA');
+    var maskCalidad = qa.eq(0);
+
+    // Máscara adicional para conservar valores físicamente razonables
+    var maskRango = ndvi.gte(-0.2).and(ndvi.lte(1));
+
+    return ndvi
+      .updateMask(maskCalidad)
+      .updateMask(maskRango)
+      .copyProperties(image, ["system:time_start"]);
+  })
+  .map(addTime);
+
+print('Colección NDVI procesada', dataset);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 5. CONTAR OBSERVACIONES VÁLIDAS POR PÍXEL
+//////////////////////////////////////////////////////////////////////////
+
+var nObs = dataset.select('NDVI').count();
+
+Map.addLayer(
+  nObs,
+  {
+    min: 0,
+    max: 230,
+    palette: ['red', 'yellow', 'green']
+  },
+  'Número de observaciones válidas'
+);
+
+print('Número de observaciones válidas por píxel', nObs);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 6. REGRESIÓN LINEAL PÍXEL A PÍXEL
+//////////////////////////////////////////////////////////////////////////
+
+// Regresión: NDVI = β0 + β1(Tiempo)
+// En linearFit():
+// scale = pendiente β1
+// offset = intercepto β0
+
+var reg = dataset.select(['time', 'NDVI'])
+  .reduce(ee.Reducer.linearFit())
+  .clip(Cesar);
+
+print('Resultado de la regresión', reg);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 7. EXTRAER LA PENDIENTE DE LA REGRESIÓN
+//////////////////////////////////////////////////////////////////////////
+
+var pend = reg.select('scale');
+
+
+// Mantener solo píxeles con al menos 100 observaciones válidas
+var pend_filtrada = pend.updateMask(nObs.gte(100));
+
+
+//////////////////////////////////////////////////////////////////////////
+// 8. VISUALIZAR TENDENCIA ANUAL DEL NDVI
+//////////////////////////////////////////////////////////////////////////
+
+Map.addLayer(
+  pend_filtrada,
+  {
+    min: -0.02,
+    max: 0.02,
+    palette: ['red', 'yellow', 'green']
+  },
+  'Tendencia anual NDVI Cesar'
+);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 9. RECLASIFICAR LA TENDENCIA
+//////////////////////////////////////////////////////////////////////////
+
+// 1 = Tendencia negativa
+// 2 = Tendencia positiva o estable
+
+var pend_r = pend_filtrada
+  .where(pend_filtrada.lt(0), 1)
+  .where(pend_filtrada.gte(0), 2);
+
+Map.addLayer(
+  pend_r,
+  {
+    min: 1,
+    max: 2,
+    palette: ['red', 'green']
+  },
+  'Tendencia reclasificada NDVI Cesar'
+);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 10. ESTADÍSTICAS GENERALES DE LA PENDIENTE
+//////////////////////////////////////////////////////////////////////////
+
+var statsPend = pend_filtrada.reduceRegion({
+  reducer: ee.Reducer.min()
+    .combine(ee.Reducer.max(), '', true)
+    .combine(ee.Reducer.mean(), '', true)
+    .combine(ee.Reducer.stdDev(), '', true),
+  geometry: Cesar,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+print('Estadísticas de la pendiente NDVI - Cesar', statsPend);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 11. ESTADÍSTICAS ROBUSTAS
+// Recomendadas para interpretar mejor la distribución
+//////////////////////////////////////////////////////////////////////////
+
+var statsRobustas = pend_filtrada.reduceRegion({
+  reducer: ee.Reducer.mean()
+    .combine(ee.Reducer.median(), '', true)
+    .combine(ee.Reducer.percentile([1, 5, 95, 99]), '', true),
+  geometry: Cesar,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+print('Estadísticas robustas de la pendiente NDVI - Cesar', statsRobustas);
+
+
+//////////////////////////////////////////////////////////////////////////
+// 12. HISTOGRAMA DE PENDIENTES
+//////////////////////////////////////////////////////////////////////////
+
+var histPend = ui.Chart.image.histogram({
+  image: pend_filtrada,
+  region: Cesar,
+  scale: 500,
+  maxPixels: 1e13
+})
+.setOptions({
+  title: 'Distribución de pendientes del NDVI en el Cesar',
+  hAxis: {
+    title: 'Pendiente anual del NDVI'
+  },
+  vAxis: {
+    title: 'Número de píxeles'
+  }
+});
+
+print(histPend);
