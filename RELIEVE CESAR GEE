@@ -1,0 +1,40 @@
+var cesar = ee.FeatureCollection("projects/vocal-entity-454103-n9/assets/SHAPELIFECESAR");
+Map.centerObject(cesar, 8);
+Map.addLayer(cesar, {color: 'red'}, 'Límite departamento del Cesar');
+var dem = ee.Image("USGS/SRTMGL1_003");
+var demCesar = dem.clip(cesar);
+var visElevacion = {
+  min: 20,
+  max: 1800,
+  palette: [
+    '0b3d91',
+    '1e90ff',
+    '00b050',
+    'ffff00',
+    'ff9900',
+    '8b4513',
+    'ffffff'
+  ]
+};
+Map.addLayer(demCesar, visElevacion, 'DEM Cesar SRTM 30m');
+var hillshade = ee.Terrain.hillshade(demCesar);
+Map.addLayer(hillshade, {
+  min: 0,
+  max: 255
+}, 'Sombreado del relieve');
+var stats = demCesar.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: cesar.geometry(),
+  scale: 30,
+  maxPixels: 1e13
+});
+//Export.image.toDrive({
+//  image: demCesar,
+//  description: 'DEM_Cesar_SRTM_30m',
+//  folder: 'GEE_EXPORTS',
+//  fileNamePrefix: 'DEM_Cesar_SRTM_30m',
+//  region: cesar.geometry(),
+//  scale: 30,
+//  crs: 'EPSG:4326',
+//  maxPixels: 1e13
+//});
